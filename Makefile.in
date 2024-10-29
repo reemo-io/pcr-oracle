@@ -3,9 +3,9 @@ PKGNAME		= pcr-oracle-$(VERSION)
 
 CCOPT		= -O0 -g
 FIRSTBOOTDIR	= /usr/share/jeos-firstboot
-CFLAGS		= -Wall @TSS2_ESYS_CFLAGS@ @JSON_CFLAGS@ $(CCOPT)
+CFLAGS		= -Wall @TSS2_ESYS_CFLAGS@ @JSON_C_CFLAGS@ $(CCOPT)
 TSS2_LINK	= -ltss2-esys -ltss2-tctildr -ltss2-rc -ltss2-mu -lcrypto
-JSON_LINK	= -L@JSON_LIBDIR@ @JSON_LIBS@
+JSON_LINK	= -L@JSON_C_LIBDIR@ @JSON_C_LIBS@
 TOOLS		= pcr-oracle
 
 MANDIR		= @MANDIR@
