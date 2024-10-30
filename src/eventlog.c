@@ -33,6 +33,7 @@
 #include "digest.h"
 #include "util.h"
 #include "uapi.h"
+#include "sd-boot.h"
 
 #define TPM_EVENT_LOG_MAX_ALGOS		64
 
@@ -549,58 +550,17 @@ tpm_event_decode_uuid(const unsigned char *data)
 }
 
 /*
- * Handle IPL events, which grub2 and sd-boot uses to hide its stuff in
- */
-static void
-__tpm_event_grub_file_destroy(tpm_parsed_event_t *parsed)
-{
-	drop_string(&parsed->grub_file.device);
-	drop_string(&parsed->grub_file.path);
-}
-
-const char *
-__tpm_event_grub_file_describe(const tpm_parsed_event_t *parsed)
-{
-	static char buffer[1024];
-
-	if (parsed->grub_file.device == NULL)
-		snprintf(buffer, sizeof(buffer), "grub2 file load from %s", parsed->grub_file.path);
-	else
-		snprintf(buffer, sizeof(buffer), "grub2 file load from (%s)%s", parsed->grub_file.device, parsed->grub_file.path);
-	return buffer;
-}
-
-
-static const tpm_evdigest_t *
-__tpm_event_grub_file_rehash(const tpm_event_t *ev, const tpm_parsed_event_t *parsed, tpm_event_log_rehash_ctx_t *ctx)
-{
-	const struct grub_file_event *evspec = &parsed->grub_file;
-	const tpm_evdigest_t *md = NULL;
-
-	debug("  re-hashing %s\n", __tpm_event_grub_file_describe(parsed));
-	if (evspec->device == NULL || !strcmp(evspec->device, "crypto0")) {
-		debug("  assuming the file resides on system partition\n");
-		md = runtime_digest_rootfs_file(ctx->algo, evspec->path);
-	} else {
-		debug("  assuming the file resides on EFI boot partition\n");
-		md = runtime_digest_efi_file(ctx->algo, evspec->path);
-	}
-
-	return md;
-}
-
-/*
  * For files residing on the EFI partition, grub usually formats these as
  * (hdX,gptY)/EFI/BOOT/some.file
  * Once it has determined the final root device, the device part will be
  * omitted (eg for kernel and initrd).
  */
 static bool
-__tpm_event_grub_file_event_parse(tpm_event_t *ev, tpm_parsed_event_t *parsed, const char *value)
+__grub_file_parse(grub_file_t *grub_file, const char *value)
 {
 	if (value[0] == '/') {
-		parsed->grub_file.device = NULL;
-		parsed->grub_file.path = strdup(value);
+		grub_file->device = NULL;
+		grub_file->path = strdup(value);
 	} else if (value[0] == '(') {
 		char *copy = strdup(value);
 		char *path;
@@ -612,12 +572,94 @@ __tpm_event_grub_file_event_parse(tpm_event_t *ev, tpm_parsed_event_t *parsed, c
 
 		*path++ = '\0';
 
-		parsed->grub_file.device = strdup(copy + 1);
-		parsed->grub_file.path = strdup(path);
+		grub_file->device = strdup(copy + 1);
+		grub_file->path = strdup(path);
 		free(copy);
 	} else {
 		return false;
 	}
+
+	return true;
+}
+
+static const char *
+__grub_file_join(grub_file_t grub_file)
+{
+	static char path[PATH_MAX];
+
+	if (grub_file.device == NULL)
+		snprintf(path, sizeof(path), "%s", grub_file.path);
+	else
+		snprintf(path, sizeof(path), "(%s)%s", grub_file.device, grub_file.path);
+
+	return path;
+}
+
+static void
+__grub_file_destroy(grub_file_t *grub_file)
+{
+	drop_string(&grub_file->device);
+	drop_string(&grub_file->path);
+}
+
+/*
+ * Handle IPL events, which grub2 and sd-boot uses to hide its stuff in
+ */
+static void
+__tpm_event_grub_file_destroy(tpm_parsed_event_t *parsed)
+{
+	__grub_file_destroy(&parsed->grub_file);
+}
+
+const char *
+__tpm_event_grub_file_describe(const tpm_parsed_event_t *parsed)
+{
+	static char buffer[1024];
+
+	snprintf(buffer, sizeof(buffer), "grub2 file load from %s", __grub_file_join(parsed->grub_file));
+	return buffer;
+}
+
+
+static const tpm_evdigest_t *
+__tpm_event_grub_file_rehash(const tpm_event_t *ev, const tpm_parsed_event_t *parsed, tpm_event_log_rehash_ctx_t *ctx)
+{
+	const grub_file_event *evspec = &parsed->grub_file;
+	const tpm_evdigest_t *md = NULL;
+
+	debug("  re-hashing %s\n", __tpm_event_grub_file_describe(parsed));
+	if (evspec->device == NULL || !strcmp(evspec->device, "crypto0")) {
+		debug("  assuming the file resides on system partition\n");
+		md = runtime_digest_rootfs_file(ctx->algo, evspec->path);
+	} else {
+		if (sdb_is_boot_entry(evspec->path) && ctx->boot_entry_path) {
+			debug("  getting different boot entry file from EFI boot partition: %s\n",
+			      ctx->boot_entry_path);
+			md = runtime_digest_rootfs_file(ctx->algo, ctx->boot_entry_path);
+		} else
+		if (sdb_is_kernel(evspec->path) && ctx->boot_entry) {
+			debug("  getting different kernel from EFI boot partition: %s\n",
+			      ctx->boot_entry->image_path);
+			md = runtime_digest_efi_file(ctx->algo, ctx->boot_entry->image_path);
+		} else
+		if (sdb_is_initrd(evspec->path) && ctx->boot_entry) {
+			debug("  getting different initrd from EFI boot partition: %s\n",
+			      ctx->boot_entry->initrd_path);
+			md = runtime_digest_efi_file(ctx->algo, ctx->boot_entry->initrd_path);
+		} else {
+			debug("  assuming the file resides on EFI boot partition\n");
+			md = runtime_digest_efi_file(ctx->algo, evspec->path);
+		}
+	}
+
+	return md;
+}
+
+static bool
+__tpm_event_grub_file_event_parse(tpm_event_t *ev, tpm_parsed_event_t *parsed, const char *value)
+{
+	if (!__grub_file_parse(&parsed->grub_file, value))
+		return false;
 
 	parsed->event_subtype = GRUB_EVENT_FILE;
 	parsed->destroy = __tpm_event_grub_file_destroy;
@@ -641,21 +683,87 @@ static const char *
 __tpm_event_grub_command_describe(const tpm_parsed_event_t *parsed)
 {
 	static char buffer[128];
+	static char *topic = NULL;
 
-	if (parsed->event_subtype == GRUB_EVENT_COMMAND)
-		snprintf(buffer, sizeof(buffer), "grub2 command \"%s\"", parsed->grub_command.string);
-	else
-		snprintf(buffer, sizeof(buffer), "grub2 kernel cmdline \"%s\"", parsed->grub_command.string);
+	switch (parsed->event_subtype) {
+	case GRUB_EVENT_COMMAND:
+		topic = "grub2 command";
+		break;
+	case GRUB_EVENT_COMMAND_LINUX:
+		topic = "grub2 linux command";
+		break;
+	case GRUB_EVENT_COMMAND_INITRD:
+		topic = "grub2 initrd command";
+		break;
+	case GRUB_EVENT_KERNEL_CMDLINE:
+		topic = "grub2 kernel cmdline";
+		break;
+	}
+
+	snprintf(buffer, sizeof(buffer), "%s \"%s\"", topic, parsed->grub_command.string);
+
 	return buffer;
 }
 
 static const tpm_evdigest_t *
 __tpm_event_grub_command_rehash(const tpm_event_t *ev, const tpm_parsed_event_t *parsed, tpm_event_log_rehash_ctx_t *ctx)
 {
-	if (parsed->grub_command.string == NULL)
-		return NULL;
+	char *str = NULL;
+	size_t sz = 0;
+	const tpm_evdigest_t *digest = NULL;
+	grub_file_t file;
 
-	return digest_compute(ctx->algo, parsed->grub_command.string, strlen(parsed->grub_command.string));
+	switch (parsed->event_subtype) {
+	case GRUB_EVENT_COMMAND:
+		str = strdup(parsed->grub_command.string);
+		break;
+	case GRUB_EVENT_COMMAND_LINUX:
+		if (ctx->boot_entry && parsed->grub_command.file.path) {
+			file = (grub_file_t) {
+				.device = parsed->grub_command.file.device,
+				.path = ctx->boot_entry->image_path,
+			};
+			sz = snprintf(NULL, 0, "linux %s %s", __grub_file_join(file), ctx->boot_entry->options);
+			str = malloc(sz + 1);
+			snprintf(str, sz + 1, "linux %s %s", __grub_file_join(file), ctx->boot_entry->options);
+			debug("Hashed linux command: %s\n", str);
+		} else
+			str = strdup(parsed->grub_command.string);
+		break;
+	case GRUB_EVENT_COMMAND_INITRD:
+		if (ctx->boot_entry && parsed->grub_command.file.path) {
+			file = (grub_file_t) {
+				.device = parsed->grub_command.file.device,
+				.path = ctx->boot_entry->initrd_path,
+			};
+			sz = snprintf(NULL, 0, "initrd %s", __grub_file_join(file));
+			str = malloc(sz + 1);
+			snprintf(str, sz + 1, "initrd %s", __grub_file_join(file));
+			debug("Hashed initrd command: %s\n", str);
+		} else
+			str = strdup(parsed->grub_command.string);
+		break;
+	case GRUB_EVENT_KERNEL_CMDLINE:
+		if (ctx->boot_entry && parsed->grub_command.file.path) {
+			file = (grub_file_t) {
+				.device = parsed->grub_command.file.device,
+				.path = ctx->boot_entry->image_path,
+			};
+			sz = snprintf(NULL, 0, "%s %s", __grub_file_join(file), ctx->boot_entry->options);
+			str = malloc(sz + 1);
+			snprintf(str, sz + 1, "%s %s", __grub_file_join(file), ctx->boot_entry->options);
+			debug("Hashed kernel cmdline: %s\n", str);
+		} else
+			str = strdup(parsed->grub_command.string);
+		break;
+	}
+
+	if (str) {
+		digest = digest_compute(ctx->algo, str, strlen(str));
+		free(str);
+	}
+
+	return digest;
 }
 
 /*
@@ -686,15 +794,29 @@ __tpm_event_grub_command_event_parse(tpm_event_t *ev, tpm_parsed_event_t *parsed
 	keyword = copy;
 	arg = copy + wordlen;
 
+	if (!strcmp(keyword, "grub_cmd") && !strncmp(arg, "linux", strlen("linux"))) {
+		for (wordlen = 0; (cc = arg[wordlen]) && (cc != ' '); ++wordlen)
+			;
+		if (arg[wordlen] == ' ' && !__grub_file_parse(&parsed->grub_command.file, arg + wordlen + 1))
+			goto failed;
+		parsed->event_subtype = GRUB_EVENT_COMMAND_LINUX;
+	} else
+	if (!strcmp(keyword, "grub_cmd") && !strncmp(arg, "initrd", strlen("initrd"))) {
+		for (wordlen = 0; (cc = arg[wordlen]) && (cc != ' '); ++wordlen)
+			;
+		if (arg[wordlen] == ' ' && !__grub_file_parse(&parsed->grub_command.file, arg + wordlen + 1))
+			goto failed;
+		parsed->event_subtype = GRUB_EVENT_COMMAND_INITRD;
+	} else
 	if (!strcmp(keyword, "grub_cmd")) {
 		parsed->event_subtype = GRUB_EVENT_COMMAND;
 	} else
 	if (!strcmp(keyword, "kernel_cmdline")) {
+		if (!__grub_file_parse(&parsed->grub_command.file, arg))
+			goto failed;
 		parsed->event_subtype = GRUB_EVENT_KERNEL_CMDLINE;
-	} else {
-		free(copy);
-		return false;
-	}
+	} else
+		goto failed;
 
 	parsed->grub_command.string = strdup(arg);
 	for (argc = 0, s = strtok(arg, " \t"); s && argc < GRUB_COMMAND_ARGV_MAX - 1; s = strtok(NULL, " \t")) {
@@ -708,6 +830,10 @@ __tpm_event_grub_command_event_parse(tpm_event_t *ev, tpm_parsed_event_t *parsed
 
 	free(copy);
 	return true;
+
+failed:
+	free(copy);
+	return false;
 }
 
 static void
@@ -790,8 +916,8 @@ static const tpm_evdigest_t *
 __tpm_event_systemd_rehash(const tpm_event_t *ev, const tpm_parsed_event_t *parsed, tpm_event_log_rehash_ctx_t *ctx)
 {
 	const uapi_boot_entry_t *boot_entry = ctx->boot_entry;
-	char initrd[2048];
-	char initrd_utf16[4096];
+	char cmdline[2048];
+	char cmdline_utf16[4096];
 	unsigned int len;
 
 	/* If no --next-kernel option was given, do not rehash anything */
@@ -804,15 +930,16 @@ __tpm_event_systemd_rehash(const tpm_event_t *ev, const tpm_parsed_event_t *pars
 	}
 
 	debug("Next boot entry expected from: %s %s\n", boot_entry->title, boot_entry->version? : "");
-	snprintf(initrd, sizeof(initrd), "initrd=%s %s",
+	snprintf(cmdline, sizeof(cmdline), "initrd=%s %s",
 			path_unix2dos(boot_entry->initrd_path),
 			boot_entry->options? : "");
+	debug("Measuring Kernel command line: %s\n", cmdline);
 
-	len = (strlen(initrd) + 1) << 1;
-	assert(len <= sizeof(initrd_utf16));
-	__convert_to_utf16le(initrd, strlen(initrd) + 1, initrd_utf16, len);
+	len = (strlen(cmdline) + 1) << 1;
+	assert(len <= sizeof(cmdline_utf16));
+	__convert_to_utf16le(cmdline, strlen(cmdline) + 1, cmdline_utf16, len);
 
-	return digest_compute(ctx->algo, initrd_utf16, len);
+	return digest_compute(ctx->algo, cmdline_utf16, len);
 }
 
 /*
@@ -876,6 +1003,7 @@ __tpm_event_tag_initrd_rehash(const tpm_event_t *ev, const tpm_parsed_event_t *p
 	}
 
 	debug("Next boot entry expected from: %s %s\n", boot_entry->title, boot_entry->version? : "");
+	debug("Measuring initrd: %s\n", boot_entry->initrd_path);
 	return runtime_digest_efi_file(ctx->algo, boot_entry->initrd_path);
 }
 

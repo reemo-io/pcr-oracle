@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <limits.h>
 
 #include "oracle.h"
 #include "util.h"
@@ -366,6 +367,7 @@ pcr_bank_extend_register(tpm_pcr_bank_t *bank, unsigned int pcr_index, const tpm
 static void
 predictor_extend_hash(struct predictor *pred, unsigned int pcr_index, const tpm_evdigest_t *d)
 {
+	debug("Extend PCR#%d: %s\n", pcr_index, digest_print(d));
 	pcr_bank_extend_register(&pred->prediction, pcr_index, d);
 }
 
@@ -652,6 +654,7 @@ predictor_update_eventlog(struct predictor *pred)
 	tpm_event_log_rehash_ctx_t rehash_ctx;
 	tpm_event_t *ev, *stop_event = NULL;
 	bool okay = true;
+	char boot_entry_path[PATH_MAX];
 
 	predictor_pre_scan_eventlog(pred, &stop_event);
 
@@ -662,9 +665,13 @@ predictor_update_eventlog(struct predictor *pred)
 	 * systemd ID of the next kernel entry to be booted.
 	 * FIXME: we should probably hide this behind a target_platform function.
 	 */
-	if (pred->boot_entry_id != NULL
-	 && !(rehash_ctx.boot_entry = sdb_identify_boot_entry(pred->boot_entry_id)))
-		fatal("unable to identify next kernel \"%s\"\n", pred->boot_entry_id);
+	if (pred->boot_entry_id != NULL) {
+		snprintf(boot_entry_path, sizeof(boot_entry_path),
+			 "%s/%s", UAPI_BOOT_DIRECTORY, pred->boot_entry_id);
+		assign_string(&rehash_ctx.boot_entry_path, boot_entry_path);
+		if (!(rehash_ctx.boot_entry = sdb_identify_boot_entry(pred->boot_entry_id)))
+			fatal("unable to identify next kernel \"%s\"\n", pred->boot_entry_id);
+	}
 
 	for (ev = pred->event_log; ev; ev = ev->next) {
 		tpm_evdigest_t *pcr;
