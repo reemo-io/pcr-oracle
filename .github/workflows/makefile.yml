@@ -24,3 +24,6 @@ jobs:
 
     - name: Build
       run: make
+
+    - name: Build deb
+      run: make deb
