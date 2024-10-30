@@ -1,0 +1,11 @@
+Package: pcr-oracle
+Version: 0.5.4
+Maintainer: Nicolas de Bonfils <nicolas.debonfils@reemo.io>
+Section: misc
+Priority: optional
+Depends: libjson-c5, libssl3, tpm2-abrmd, libtss2-esys-3.0.2-0, libtss2-fapi1, libtss2-mu0, libtss2-rc0, libtss2-sys1, libtss2-tcti-cmd0, libtss2-tcti-device0, libtss2-tcti-mssim0, libtss2-tcti-swtpm0, libtss2-tcti-tabrmd-dev, libtss2-tcti-tabrmd0
+Build-Depends: debhelper (>= 9), build-essential, pkg-config, libssl-dev, libtss2-dev, libjson-c-dev
+Architecture: amd64
+Vcs-Browser: https://github.com/reemo-io/pcr-oracle/
+Vcs-Git: https://github.com/reemo-io/pcr-oracle/
+Description:  Predict TPM PCR values for future boot
