@@ -1,5 +1,9 @@
-VERSION		= @PCR_ORACLE_VERSION@
-PKGNAME		= pcr-oracle-$(VERSION)
+NAME	  	 = pcr-oracle
+VERSION		 = @PCR_ORACLE_VERSION@
+PKGNAME		 = $(NAME)-$(VERSION)
+PKGRELEASE = 1
+PKGARCH		 = amd64
+PKGDEB		 = $(NAME)_$(VERSION)-$(PKGRELEASE)_$(PKGARCH).deb
 
 CCOPT		= -O0 -g
 FIRSTBOOTDIR	= /usr/share/jeos-firstboot
@@ -11,6 +15,8 @@ TOOLS		= pcr-oracle
 MANDIR		= @MANDIR@
 MAN8DIR		= $(MANDIR)/man8
 MANPAGES	= man/pcr-oracle.8
+
+TMPINSTALLDIR=/tmp/$(NAME)
 
 ORACLE_SRCS	= oracle.c \
 		  pcr.c \
@@ -51,6 +57,7 @@ man/%.8: man/%.8.in
 clean:
 	rm -f $(TOOLS)
 	rm -rf build
+	rm -rf $(TMPINSTALLDIR)
 
 pcr-oracle: $(ORACLE_OBJS)
 	$(CC) -o $@ $(ORACLE_OBJS) $(TSS2_LINK) $(JSON_LINK)
@@ -72,3 +79,11 @@ dist:
 	cp -a $(DIST_FILES) $(PKGNAME)
 	tar cvjf $(PKGNAME).tar.bz2 $(PKGNAME)/*
 	rm -rf $(PKGNAME)
+
+deb:
+	rm -rf $(TMPINSTALLDIR)
+	rm -f $(PKGDEB)
+	make install DESTDIR=$(TMPINSTALLDIR)
+	cp -a DEBIAN $(TMPINSTALLDIR)/
+	dpkg-deb --build $(TMPINSTALLDIR) $(PKGDEB)
+	rm -rf $(TMPINSTALLDIR)
