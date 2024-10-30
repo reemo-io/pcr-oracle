@@ -62,13 +62,14 @@ struct target_platform {
 					const stored_key_t *public_key_file);
 };
 
-static TPM2B_PUBLIC SRK_template = {
+static TPM2B_PUBLIC RSA_SRK_template = {
 	.size = sizeof(TPMT_PUBLIC),
 	.publicArea = {
 		.type = TPM2_ALG_RSA,
 		.nameAlg = TPM2_ALG_SHA256,
-		/* For reasons not clear to me, grub2 derives the SRK using the NODA attribute,
-		 * which means it is not subject to dictionary attack protections. */
+		/* Per "Storage Primary Key (SRK) Templates" in section 7.5.1 of
+		 * TCG TPM v2.0 Provisioning Guidance 1.0 Revision 1.0, the
+		 * template for shared SRKs sets USERWITHAUTH and NODA. */
 		.objectAttributes = TPMA_OBJECT_RESTRICTED|TPMA_OBJECT_DECRYPT \
 			|TPMA_OBJECT_FIXEDTPM|TPMA_OBJECT_FIXEDPARENT \
 			|TPMA_OBJECT_SENSITIVEDATAORIGIN|TPMA_OBJECT_USERWITHAUTH \
@@ -86,6 +87,35 @@ static TPM2B_PUBLIC SRK_template = {
 		}
 	}
 };
+
+static TPM2B_PUBLIC ECC_SRK_template = {
+	.size = sizeof(TPMT_PUBLIC),
+	.publicArea = {
+		.type = TPM2_ALG_ECC,
+		.nameAlg = TPM2_ALG_SHA256,
+		/* Per "Storage Primary Key (SRK) Templates" in section 7.5.1 of
+		 * TCG TPM v2.0 Provisioning Guidance 1.0 Revision 1.0, the
+		 * template for shared SRKs sets USERWITHAUTH and NODA. */
+		.objectAttributes = TPMA_OBJECT_RESTRICTED|TPMA_OBJECT_DECRYPT \
+			|TPMA_OBJECT_FIXEDTPM|TPMA_OBJECT_FIXEDPARENT \
+			|TPMA_OBJECT_SENSITIVEDATAORIGIN|TPMA_OBJECT_USERWITHAUTH \
+			|TPMA_OBJECT_NODA,
+		.parameters = {
+			.eccDetail = {
+				.symmetric = {
+					.algorithm = TPM2_ALG_AES,
+					.keyBits = { .sym = 128 },
+					.mode = { .sym = TPM2_ALG_CFB },
+				},
+				.scheme = { TPM2_ALG_NULL },
+				.curveID = TPM2_ECC_NIST_P256,
+				.kdf.scheme = TPM2_ALG_NULL
+			}
+		}
+	}
+};
+
+static const TPM2B_PUBLIC *SRK_template;
 
 static const TPM2B_PUBLIC seal_public_template = {
             .size = sizeof(TPMT_PUBLIC),
@@ -107,9 +137,18 @@ static const TPM2B_PUBLIC seal_public_template = {
         };
 
 void
+set_srk_alg (const char *alg)
+{
+	if (strcmp(alg, "RSA") == 0)
+		SRK_template = &RSA_SRK_template;
+	else
+		SRK_template = &ECC_SRK_template;
+}
+
+void
 set_srk_rsa_bits (const unsigned int rsa_bits)
 {
-	SRK_template.publicArea.parameters.rsaDetail.keyBits = rsa_bits;
+	RSA_SRK_template.publicArea.parameters.rsaDetail.keyBits = rsa_bits;
 }
 
 static inline const tpm_evdigest_t *
@@ -608,7 +647,7 @@ esys_create_primary(ESYS_CONTEXT *esys_context, ESYS_TR *handle_ret)
 	t0 = timing_begin();
 	rc = Esys_CreatePrimary(esys_context, ESYS_TR_RH_OWNER,
 			ESYS_TR_PASSWORD,
-			ESYS_TR_NONE, ESYS_TR_NONE, &in_sensitive, &SRK_template,
+			ESYS_TR_NONE, ESYS_TR_NONE, &in_sensitive, SRK_template,
 			NULL, &creation_pcr, handle_ret,
 			NULL, NULL,
 			NULL, NULL);
@@ -1466,6 +1505,11 @@ tpm2key_unseal_secret(const char *input_path, const char *output_path,
 	if (!tpm2key_read_file(input_path, &tpm2key))
 		return false;
 
+	if (tpm2key->rsaParent == 1)
+		SRK_template = &RSA_SRK_template;
+	else
+		SRK_template = &ECC_SRK_template;
+
 	buffer_init_read(&buf, tpm2key->pubkey->data, tpm2key->pubkey->length);
 	rc = Tss2_MU_TPM2B_PUBLIC_Unmarshal(buf.data, buf.size, &buf.rpos, &pub);
 	if (rc != TSS2_RC_SUCCESS)
@@ -1594,6 +1638,9 @@ tpm2key_write_sealed_secret(const char *pathname,
 
 	if (!tpm2key_basekey(&tpm2key, TPM2_RH_OWNER, sealed_public, sealed_private))
 		goto cleanup;
+
+	if (SRK_template->publicArea.type == TPM2_ALG_RSA)
+		tpm2key->rsaParent = 1;
 
 	if (pcr_sel && !tpm2key_add_policy_policypcr(tpm2key, pcr_sel))
 		goto cleanup;
