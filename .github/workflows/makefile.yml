@@ -16,8 +16,8 @@ jobs:
 
     - name: Install dependencies
       run: |
-        DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -qqy update
-        DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -qqy install -y build-essential libtss2-dev libjson-c-dev libssl-dev pkg-config
+        DEBIAN_FRONTEND=noninteractive sudo apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -qqy update
+        DEBIAN_FRONTEND=noninteractive sudo apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -qqy install -y build-essential libtss2-dev libjson-c-dev libssl-dev pkg-config
 
     - name: configure
       run: ./configure
